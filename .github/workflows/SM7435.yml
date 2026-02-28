@@ -1,0 +1,123 @@
+name: Cosmic Kernel CI-Garnet
+
+on:
+  workflow_dispatch:
+
+jobs:
+  Kernel_Build_CI:
+    name: Cosmic Kernel Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Initial Setup & Titan Trigger
+        run: |
+          # Core Dependencies
+          sudo apt-get update -qq && sudo apt-get install -y jq
+          
+          # Time & Build ID Configuration
+          sudo timedatectl set-timezone Asia/Kolkata
+          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+          START_DATE=$(date '+%Y-%m-%d %I:%M %p')
+          echo "START_DATE=$START_DATE" >> $GITHUB_ENV
+          
+          # Build ID starts from 1 based on run_number
+          BID="CK-${{ github.run_number }}"
+          echo "BID=$BID" >> $GITHUB_ENV
+          
+          # High-End Professional Initial Trigger
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d parse_mode="HTML" \
+            -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>$BID</code>%0A┃ 🕒 <b>Triggered:</b> <code>$START_DATE</code>%0A┃ 🛰️ <b>Status:</b> 🏗️ Initializing...%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[░░░░░░░░░░] 0%")
+          
+          MSG_ID=$(echo $RESPONSE | jq '.result.message_id')
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
+
+      - name: Maximize Space & Swap
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ ⚙️ <b>Step:</b> Resource Optimization%0A┃ 🛰️ <b>Status:</b> Expanding Swap%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓░░░░░░░░░] 10%"
+          
+          # Fix for 'Text file busy': Turn off existing swap
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Checkout & Clone
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 📂 <b>Step:</b> Git Syncing%0A┃ 🛰️ <b>Status:</b> Cloning Sources%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓▓░░░░░░░░] 25%"
+          
+          git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435 --depth=1 -b lineage-23.0 kernel
+          git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435-modules --depth=1 -b lineage-23.0 kernel/kernel/xiaomi/sm7435-modules
+          cd kernel && echo "COMMIT_ID=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Setup Toolchain & Build
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 🔨 <b>Step:</b> Kernel Compilation%0A┃ 🛰️ <b>Status:</b> Active Clang Build%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓▓▓▓▓▓░░░░] 60%"
+          
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 -b main clang-repo
+          mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
+          export PATH=$(pwd)/clang/bin:$PATH
+          cd kernel
+          MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+          make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
+          make -j$(nproc --all) O=out $MAKE_ARGS 2>&1 | tee ../build_log.txt
+          
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 🌿 <b>Step:</b> DTB & Modules Build%0A┃ 🛰️ <b>Status:</b> Finalizing Binary%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓▓▓▓▓▓▓▓░░] 85%"
+          
+          make -j$(nproc --all) O=out $MAKE_ARGS dtbs 2>&1 | tee -a ../build_log.txt
+          make -j$(nproc --all) O=out $MAKE_ARGS modules 2>&1 | tee -a ../build_log.txt
+
+      - name: Packaging
+        if: success()
+        run: |
+          mkdir -p output
+          cp kernel/out/arch/arm64/boot/Image output/
+          find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} output/ \;
+          find kernel/out -name "*.ko" -exec cp {} output/ \;
+          cd output && zip -r9 ../Cosmic-Kernel-Garnet.zip *
+          cd ..
+          echo "MD5_HASH=$(md5sum Cosmic-Kernel-Garnet.zip | cut -d' ' -f1)" >> $GITHUB_ENV
+
+      - name: Final Delivery
+        if: success()
+        run: |
+          CUR_TIME=$(date +%s)
+          DIFF=$(( CUR_TIME - START_TIME ))
+          DURATION="$(( DIFF / 60 ))m $(( DIFF % 60 ))s"
+          
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="🏁 <b>BUILD COMPLETE</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ ✅ <b>Result:</b> Success%0A┃ ⏱️ <b>Duration:</b> <code>$DURATION</code>%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓▓▓▓▓▓▓▓▓▓] 100%"
+          
+          curl -F chat_id="${{ secrets.TG_CHAT_ID }}" -F document=@"Cosmic-Kernel-Garnet.zip" \
+          -F caption="🎁 <b>Cosmic Kernel Ready!</b>%0A━━━━━━━━━━━━━━━━━━━━%0A🆔 <b>Commit:</b> <code>${{ env.COMMIT_ID }}</code>%0A🔑 <b>MD5:</b> <code>${{ env.MD5_HASH }}</code>%0A👤 <b>Built by:</b> ${{ github.actor }}" \
+          -F parse_mode="HTML" "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/sendDocument"
+
+      - name: Cancellation Handler
+        if: cancelled()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="🛑 <b>BUILD CANCELLED</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 🕒 <b>Time:</b> <code>$(date '+%I:%M %p')</code>%0A┃ ⚠️ <b>Status:</b> Terminated by User%0A┗━━━━━━━━━━━━━━━━━━━━━━┛"
+
+      - name: Failure Handler
+        if: failure()
+        run: |
+          [ -f build_log.txt ] && tail -n 250 build_log.txt > error.txt || echo "Crash before logs." > error.txt
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/editMessageText" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
+            -d text="🚨 <b>BUILD FAILED</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 🕒 <b>Time:</b> <code>$(date '+%I:%M %p')</code>%0A┃ ⚠️ <b>Log:</b> Sending Trace...%0A┗━━━━━━━━━━━━━━━━━━━━━━┛"
+          
+          curl -F chat_id="${{ secrets.TG_CHAT_ID }}" -F document=@"error.txt" \
+          -F caption="❌ <b>Build Trace Attached</b>%0ACheck the end of this file for the error." \
+          -F parse_mode="HTML" "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}/sendDocument"
