@@ -52,7 +52,7 @@ jobs:
             -d chat_id="${{ secrets.TG_CHAT_ID }}" -d message_id="${{ env.MSG_ID }}" -d parse_mode="HTML" \
             -d text="✨ <b>COSMIC KERNEL | GARNET</b>%0A┏━━━━━━━━━━━━━━━━━━━━━━┓%0A┃ 👤 <b>Operator:</b> <code>${{ github.actor }}</code>%0A┃ 🆔 <b>Build ID:</b> <code>${{ env.BID }}</code>%0A┃ 📂 <b>Step:</b> Git Syncing%0A┃ 🛰️ <b>Status:</b> Cloning Sources%0A┗━━━━━━━━━━━━━━━━━━━━━━┛%0A[▓▓░░░░░░░░] 25%"
           
-          git clone https://github.com/CosmicCoreX/kernel_xiaomi_garnet.git --depth=1 -b Zen-ltsu kernel
+          git clone https://github.com/CosmicCoreX/kernel_xiaomi_garnet.git --depth=1 -b bkl kernel
           git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435-devicetrees.git --depth=1 -b lineage-23 kernel/kernel/xiaomi/sm7435-modules
           cd kernel && echo "COMMIT_ID=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
