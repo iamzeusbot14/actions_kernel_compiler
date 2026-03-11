@@ -15,7 +15,8 @@ jobs:
     steps:
       - name: Environment Setup
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jr-headless
+          sudo apt-get update -qq
+          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
           sudo timedatectl set-timezone Asia/Kolkata
           
           # Source Sync
@@ -40,7 +41,7 @@ jobs:
 
       - name: Notify Build Started
         run: |
-          MESSAGE=$(printf "<b>Build Triggered</b> ⌛\n<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>\n<b>Support</b> : <code>Android 16.0</code>\n<b>Variant</b> : <code>GKI Stable</code>\n<b>Machine</b> : <code>$(lsb_release -ds)</code>\n<b>Cores</b> : <code>$(nproc --all)</code>\n<b>Time</b> : <code>${{ env.START_DATE }}</code>\n<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}")
+          MESSAGE=$(printf "<b>Build Triggered</b>\n<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>\n<b>Support</b> : <code>Android 16.0</code>\n<b>Variant</b> : <code>GKI Stable</code>\n<b>Machine</b> : <code>$(lsb_release -ds)</code>\n<b>Cores</b> : <code>$(nproc --all)</code>\n<b>Time</b> : <code>${{ env.START_DATE }}</code>\n<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}")
           curl -s -X POST "${{ env.TG_BOT }}/sendMessage" -d chat_id="${{ env.CHAT_ID }}" -d parse_mode="HTML" -d text="$MESSAGE"
 
       - name: Build Execution
@@ -52,7 +53,6 @@ jobs:
           
           make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
           make -j$(nproc --all) O=out $MAKE_ARGS 2>&1 | tee ../build_log.txt
-          make -j$(nproc --all) O=out $MAKE_ARGS dtbs modules 2>&1 | tee -a ../build_log.txt
 
       - name: Handle Success & Signing
         if: success()
@@ -62,31 +62,33 @@ jobs:
           find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} output/ \;
           find kernel/out -name "*.ko" -exec cp {} output/ \;
           
-          # Initial ZIP
           cd output && zip -r9 ../unsigned.zip * && cd ..
           
-          # Generate Professional Name: xcalibur-v5.4-violet-dynamic-04032026-1232-signed.zip
-          FINAL_ZIP="xcalibur-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
-          
-          # Sign ZIP
+          FINAL_ZIP="Cosmic-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
           java -jar zipsigner.jar unsigned.zip "$FINAL_ZIP"
           
-          # Calculations
           DIFF=$(( $(date +%s) - START_TIME ))
           MIN=$(( DIFF / 60 ))
           SEC=$(( DIFF % 60 ))
           MD5=$(md5sum "$FINAL_ZIP" | cut -d' ' -f1)
           
-          CAPTION=$(printf "✅ <b>Build Success</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n🚀 <code>Build took : $MIN minute(s) and $SEC second(s) | MD5 Checksum : $MD5</code>")
-
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$FINAL_ZIP" \
-          -F parse_mode="HTML" -F caption="$CAPTION" \
-          "${{ env.TG_BOT }}/sendDocument"
+          # Single-line format without emojis
+          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $MIN minute(s) and $SEC second(s) | MD5 Checksum : $MD5</code>")
+          
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          [ -f build_log.txt ] && tail -n 250 build_log.txt > error_log.txt || echo "Failure." > error_log.txt
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" \
-          -F parse_mode="HTML" -F caption="❌ <b>Build Failed</b>" \
-          "${{ env.TG_BOT }}/sendDocument"
+          if [ -f build_log.txt ]; then
+            tail -n 500 build_log.txt > error_log.txt
+          else
+            echo "Build failed before log generation." > error_log.txt
+          fi
+          
+          DIFF=$(( $(date +%s) - START_TIME ))
+          MIN=$(( DIFF / 60 ))
+          SEC=$(( DIFF % 60 ))
+          
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $MIN minute(s) and $SEC second(s)</code>\n<i>Last 500 lines of trace attached.</i>")
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
