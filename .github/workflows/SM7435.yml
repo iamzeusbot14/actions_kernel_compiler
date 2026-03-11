@@ -20,16 +20,17 @@ jobs:
 
           echo "Initializing Environment..."
           sudo apt-get update -qq
-          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release zram-tools
+          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
           sudo timedatectl set-timezone Asia/Kolkata
           
-          # Configure 10GB ZRAM
-          sudo modprobe zram
-          sudo zramctl --find --size 10G
-          sudo mkswap /dev/zram0
-          sudo swapon /dev/zram0 --priority 100
-          echo "ZRAM Status:"
-          zramctl
+          # Massive 12GB SSD Swap (Replacing ZRAM for Azure compatibility)
+          echo "Setting up 12GB Swap..."
+          sudo swapoff -a
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
           echo "Cloning Sources..."
           git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel
@@ -46,13 +47,11 @@ jobs:
             echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
             echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
             
-            # Additional 4GB swap file for extreme safety
-            sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-            
             export PATH=$(pwd)/../clang/bin:$PATH
             MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
             
             make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
+            # LTO needs lots of RAM; the 12GB swap will handle the spillover
             make -j$(nproc --all) O=out $MAKE_ARGS
           else
             echo "CRITICAL: Kernel directory missing."
