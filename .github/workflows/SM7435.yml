@@ -11,24 +11,25 @@ jobs:
     env:
       TG_BOT: "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}"
       CHAT_ID: "${{ secrets.TG_CHAT_ID }}"
+      # Absolute path to ensure log persistence
+      FULL_LOG: "${{ github.workspace }}/build_log.txt"
 
     steps:
       - name: Build Execution
-        id: build_step
         run: |
-          # 1. Start Logging
-          touch ${{ github.workspace }}/build_log.txt
-          exec > >(tee -a ${{ github.workspace }}/build_log.txt) 2>&1
+          # 1. Setup Logging
+          touch $FULL_LOG
+          exec > >(tee -a $FULL_LOG) 2>&1
 
           echo "Initializing Environment..."
           sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
           sudo timedatectl set-timezone Asia/Kolkata
           
-          # 2. Setup 12GB Swap
+          echo "Setting up 12GB Swap..."
           sudo swapoff -a
           sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 
-          # 3. Clone & Prep
+          echo "Cloning Sources..."
           git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel
           git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
@@ -39,11 +40,17 @@ jobs:
           if [ -d "kernel" ]; then
             cd kernel
             
-            # --- FIX: Patch undefined pwrkey_irq_notifier_list ---
-            echo "Applying modpost patch..."
-            grep -rln "pwrkey_irq_notifier_list" . | xargs sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list);/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' || true
+            # --- FIX: Brute-force Symbol Export ---
+            echo "Searching and Patching pwrkey_irq_notifier_list..."
+            # This finds the actual .c file containing the definition and appends the export
+            TARGET_FILE=$(grep -rln "BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)" . | head -n 1)
+            if [ ! -z "$TARGET_FILE" ]; then
+                echo "Found definition in $TARGET_FILE. Patching..."
+                echo "EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);" >> "$TARGET_FILE"
+            else
+                echo "Warning: Definition not found. Modpost may still fail."
+            fi
 
-            # Export Metadata to GITHUB_ENV for other steps
             echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
             echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
             echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
@@ -71,22 +78,17 @@ jobs:
           java -jar zipsigner.jar unsigned.zip "$FINAL_ZIP"
           
           DIFF=$(( $(date +%s) - env.START_TIME ))
-          MIN=$(( DIFF / 60 ))
-          SEC=$(( DIFF % 60 ))
-          MD5=$(md5sum "$FINAL_ZIP" | cut -d' ' -f1)
-          
-          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $MIN minute(s) and $SEC second(s) | MD5 Checksum : $MD5</code>")
+          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $(( DIFF / 60 ))m $(( DIFF % 60 ))s</code>")
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          # Ensure we have a file to send
-          tail -n 500 ${{ github.workspace }}/build_log.txt > ${{ github.workspace }}/error_log.txt || echo "No logs found" > ${{ github.workspace }}/error_log.txt
+          # Use the absolute path defined in env
+          tail -n 500 ${{ env.FULL_LOG }} > ${{ github.workspace }}/error_trace.txt || echo "No logs captured." > ${{ github.workspace }}/error_trace.txt
           
-          # Use fallback for COMMIT_SHA if the build failed before it was set
-          ID="${{ env.COMMIT_SHA }}"
-          [ -z "$ID" ] && ID="Unknown"
+          COMMIT="${{ env.COMMIT_SHA }}"
+          [ -z "$COMMIT" ] && COMMIT="Build Init"
 
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$ID</code>\n<i>Last 500 lines of trace attached.</i>")
-          curl -v -F chat_id="${{ env.CHAT_ID }}" -F document=@"${{ github.workspace }}/error_log.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 lines of trace attached.</i>")
+          curl -v -F chat_id="${{ env.CHAT_ID }}" -F document=@"${{ github.workspace }}/error_trace.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
