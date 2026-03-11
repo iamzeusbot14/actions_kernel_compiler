@@ -64,10 +64,16 @@ jobs:
           cd output && zip -r9 ../Cosmic-Kernel-Garnet.zip *
           cd ..
           
+          # Calculate Timing
+          DIFF=$(( $(date +%s) - START_TIME ))
+          MIN=$(( DIFF / 60 ))
+          SEC=$(( DIFF % 60 ))
+          
+          # MD5 Checksum
           MD5=$(md5sum Cosmic-Kernel-Garnet.zip | cut -d' ' -f1)
           
-          # Xcalibur Style Caption
-          CAPTION=$(printf "✅ <b>Build Success</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n🔑 <b>MD5:</b> <code>$MD5</code>")
+          # Professional Output String
+          CAPTION=$(printf "✅ <b>Build Success</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n📦 <b>Build took :</b> <code>$MIN minute(s) and $SEC second(s)</code>\n🔑 <b>MD5 Checksum :</b> <code>$MD5</code>")
 
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"Cosmic-Kernel-Garnet.zip" \
           -F parse_mode="HTML" -F caption="$CAPTION" \
@@ -76,9 +82,13 @@ jobs:
       - name: Handle Failure
         if: failure()
         run: |
-          [ -f build_log.txt ] && tail -n 250 build_log.txt > error_log.txt || echo "Build failed." > error_log.txt
+          DIFF=$(( $(date +%s) - START_TIME ))
+          MIN=$(( DIFF / 60 ))
+          SEC=$(( DIFF % 60 ))
           
-          CAPTION=$(printf "❌ <b>Build Failed</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n⚠️ <i>Logs attached below.</i>")
+          [ -f build_log.txt ] && tail -n 250 build_log.txt > error_log.txt || echo "Build failed early." > error_log.txt
+          
+          CAPTION=$(printf "❌ <b>Build Failed</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n⏱️ <b>Stopped at:</b> <code>$MIN minute(s) and $SEC second(s)</code>\n⚠️ <i>Logs attached.</i>")
 
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" \
           -F parse_mode="HTML" -F caption="$CAPTION" \
