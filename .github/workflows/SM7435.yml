@@ -15,6 +15,7 @@ jobs:
     steps:
       - name: Build Execution
         run: |
+          # Start capturing every single log line immediately
           touch build_log.txt
           exec > >(tee -a build_log.txt) 2>&1
 
@@ -23,7 +24,7 @@ jobs:
           sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
           sudo timedatectl set-timezone Asia/Kolkata
           
-          echo "Setting up 12GB Swap..."
+          echo "Setting up 12GB Swap for LTO..."
           sudo swapoff -a
           sudo fallocate -l 12G /swapfile
           sudo chmod 600 /swapfile
@@ -41,10 +42,10 @@ jobs:
           if [ -d "kernel" ]; then
             cd kernel
             
-            # --- FIX: Patch undefined pwrkey_irq_notifier_list ---
-            echo "Applying patch for pwrkey_irq_notifier_list..."
-            # Find definition and append export symbol so mtdoops.ko can see it
-            grep -rln "pwrkey_irq_notifier_list" . | xargs sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list);/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' || echo "Patch skip/fail"
+            # --- PATCH: Fix Undefined Symbol Error ---
+            echo "Patching pwrkey_irq_notifier_list export..."
+            # This finds the notifier head definition and adds the export line directly below it
+            grep -rln "pwrkey_irq_notifier_list" . | xargs sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list);/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' || echo "Patch already applied or file not found."
 
             echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
             echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
@@ -55,11 +56,9 @@ jobs:
             MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
             
             make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
-            
-            # Start actual compilation
             make -j$(nproc --all) O=out $MAKE_ARGS
           else
-            echo "CRITICAL: Kernel directory missing."
+            echo "CRITICAL: Kernel directory missing. Clone failed."
             exit 1
           fi
 
@@ -86,6 +85,8 @@ jobs:
       - name: Handle Failure
         if: failure()
         run: |
-          [ -s build_log.txt ] && tail -n 500 build_log.txt > error_log.txt || echo "Check Actions Console." > error_log.txt
+          # If build_log.txt exists and is not empty, use it. Otherwise, send fallback.
+          [ -s build_log.txt ] && tail -n 500 build_log.txt > error_log.txt || echo "Build failed. Check GitHub Action Console for details." > error_log.txt
+          
           CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<i>Last 500 lines of trace attached.</i>")
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
