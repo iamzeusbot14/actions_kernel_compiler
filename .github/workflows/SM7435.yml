@@ -13,20 +13,20 @@ jobs:
       CHAT_ID: "${{ secrets.TG_CHAT_ID }}"
 
     steps:
-      - name: System Setup & Metadata
+      - name: Environment Setup
         run: |
           sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev
           sudo timedatectl set-timezone Asia/Kolkata
           
-          # Clone Sources
+          # Source Sync
           git clone https://github.com/CosmicCoreX/kernel_xiaomi_garnet.git --depth=1 -b bkl kernel
           git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435-devicetrees.git --depth=1 -b lineage-23 kernel/kernel/xiaomi/sm7435-modules
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
-          # Prepare Toolchain
+          # Toolchain Prep
           mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
           
-          # Gather Metadata
+          # Metadata Extraction
           cd kernel
           echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
           echo "START_DATE=$(date '+%a %b %d %I:%M:%S %p')" >> $GITHUB_ENV
@@ -38,23 +38,14 @@ jobs:
 
       - name: Notify Build Started
         run: |
-          MESSAGE="<b>Build Triggered</b> ⌛%0A"
-          MESSAGE+="<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>%0A"
-          MESSAGE+="<b>Support</b> : <code>Android 16.0</code>%0A"
-          MESSAGE+="<b>Variant</b> : <code>GKI Stable</code>%0A"
-          MESSAGE+="<b>Machine</b> : <code>${{ env.OS_VER }}</code>%0A"
-          MESSAGE+="<b>Cores</b> : <code>${{ env.CPU_CORES }}</code>%0A"
-          MESSAGE+="<b>Time</b> : <code>${{ env.START_DATE }}</code>%0A"
-          MESSAGE+="<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}"
+          MESSAGE=$(printf "<b>Build Triggered</b> ⌛\n<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>\n<b>Support</b> : <code>Android 16.0</code>\n<b>Variant</b> : <code>GKI Stable</code>\n<b>Machine</b> : <code>${{ env.OS_VER }}</code>\n<b>Cores</b> : <code>${{ env.CPU_CORES }}</code>\n<b>Time</b> : <code>${{ env.START_DATE }}</code>\n<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}")
 
           curl -s -X POST "${{ env.TG_BOT }}/sendMessage" \
             -d chat_id="${{ env.CHAT_ID }}" -d parse_mode="HTML" -d text="$MESSAGE"
 
       - name: Build Execution
         run: |
-          # Swap for Stability
           sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-          
           export PATH=$(pwd)/clang/bin:$PATH
           cd kernel
           MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
@@ -73,25 +64,22 @@ jobs:
           cd output && zip -r9 ../Cosmic-Kernel-Garnet.zip *
           cd ..
           
-          # Stats calculation
-          DIFF=$(( $(date +%s) - START_TIME ))
-          DURATION="$(( DIFF / 60 ))m $(( DIFF % 60 ))s"
           MD5=$(md5sum Cosmic-Kernel-Garnet.zip | cut -d' ' -f1)
+          
+          # Xcalibur Style Caption
+          CAPTION=$(printf "✅ <b>Build Success</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n🔑 <b>MD5:</b> <code>$MD5</code>")
 
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"Cosmic-Kernel-Garnet.zip" \
-          -F parse_mode="HTML" -F caption="✅ <b>Build Completed</b>%0A━━━━━━━━━━━━━━━━━━━━%0A⏱️ <b>Duration:</b> <code>$DURATION</code>%0A🆔 <b>SHA:</b> <code>${{ env.COMMIT_SHA }}</code>%0A🔑 <b>MD5:</b> <code>$MD5</code>" \
+          -F parse_mode="HTML" -F caption="$CAPTION" \
           "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          # Calculate time even on failure
-          DIFF=$(( $(date +%s) - START_TIME ))
-          DURATION="$(( DIFF / 60 ))m $(( DIFF % 60 ))s"
+          [ -f build_log.txt ] && tail -n 250 build_log.txt > error_log.txt || echo "Build failed." > error_log.txt
           
-          # Grab last 200 lines of log
-          [ -f build_log.txt ] && tail -n 200 build_log.txt > error_log.txt || echo "Build failed early." > error_log.txt
-          
+          CAPTION=$(printf "❌ <b>Build Failed</b>\n\n🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n⚠️ <i>Logs attached below.</i>")
+
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" \
-          -F parse_mode="HTML" -F caption="❌ <b>Build Failed</b>%0A━━━━━━━━━━━━━━━━━━━━%0A⏱️ <b>Stopped at:</b> <code>$DURATION</code>%0A🆔 <b>SHA:</b> <code>${{ env.COMMIT_SHA }}</code>%0A⚠️ <i>Check logs for details.</i>" \
+          -F parse_mode="HTML" -F caption="$CAPTION" \
           "${{ env.TG_BOT }}/sendDocument"
