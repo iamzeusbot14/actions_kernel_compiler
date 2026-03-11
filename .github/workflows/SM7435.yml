@@ -13,44 +13,42 @@ jobs:
       CHAT_ID: "${{ secrets.TG_CHAT_ID }}"
 
     steps:
-      - name: System Setup & Sync
+      - name: System Setup & Metadata
         run: |
           sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev
           sudo timedatectl set-timezone Asia/Kolkata
           
-          # Clone Kernel & Toolchain
+          # Clone Sources
           git clone https://github.com/CosmicCoreX/kernel_xiaomi_garnet.git --depth=1 -b bkl kernel
           git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435-devicetrees.git --depth=1 -b lineage-23 kernel/kernel/xiaomi/sm7435-modules
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
-          # Prepare Clang
+          # Prepare Toolchain
           mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
           
           # Gather Metadata
           cd kernel
           echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-          echo "START_DATE=$(date '+%a %b %d %I:%M:%p %Z')" >> $GITHUB_ENV
+          echo "START_DATE=$(date '+%a %b %d %I:%M:%S %p')" >> $GITHUB_ENV
           echo "OS_VER=$(lsb_release -ds)" >> $GITHUB_ENV
           echo "CPU_CORES=$(nproc --all)" >> $GITHUB_ENV
           echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
           echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
           echo "COMMIT_MSG=$(git log -1 --pretty=format:'%s')" >> $GITHUB_ENV
 
-      - name: Telegram Notification
+      - name: Notify Build Started
         run: |
           MESSAGE="<b>Build Triggered</b> ⌛%0A"
           MESSAGE+="<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>%0A"
-          MESSAGE+="<b>Support</b> : <code>Android 14.0-15.0</code>%0A"
+          MESSAGE+="<b>Support</b> : <code>Android 16.0</code>%0A"
           MESSAGE+="<b>Variant</b> : <code>GKI Stable</code>%0A"
           MESSAGE+="<b>Machine</b> : <code>${{ env.OS_VER }}</code>%0A"
           MESSAGE+="<b>Cores</b> : <code>${{ env.CPU_CORES }}</code>%0A"
           MESSAGE+="<b>Time</b> : <code>${{ env.START_DATE }}</code>%0A"
           MESSAGE+="<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}"
 
-          RESPONSE=$(curl -s -X POST "${{ env.TG_BOT }}/sendMessage" \
-            -d chat_id="${{ env.CHAT_ID }}" -d parse_mode="HTML" -d text="$MESSAGE")
-          
-          echo "MSG_ID=$(echo $RESPONSE | jq '.result.message_id')" >> $GITHUB_ENV
+          curl -s -X POST "${{ env.TG_BOT }}/sendMessage" \
+            -d chat_id="${{ env.CHAT_ID }}" -d parse_mode="HTML" -d text="$MESSAGE"
 
       - name: Build Execution
         run: |
@@ -65,7 +63,7 @@ jobs:
           make -j$(nproc --all) O=out $MAKE_ARGS 2>&1 | tee ../build_log.txt
           make -j$(nproc --all) O=out $MAKE_ARGS dtbs modules 2>&1 | tee -a ../build_log.txt
 
-      - name: Package & Upload
+      - name: Handle Success
         if: success()
         run: |
           mkdir -p output
@@ -75,18 +73,25 @@ jobs:
           cd output && zip -r9 ../Cosmic-Kernel-Garnet.zip *
           cd ..
           
+          # Stats calculation
           DIFF=$(( $(date +%s) - START_TIME ))
           DURATION="$(( DIFF / 60 ))m $(( DIFF % 60 ))s"
           MD5=$(md5sum Cosmic-Kernel-Garnet.zip | cut -d' ' -f1)
 
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"Cosmic-Kernel-Garnet.zip" \
-          -F parse_mode="HTML" -F caption="✅ <b>Build Success</b> after $DURATION%0A%0A🆔 <b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>%0A🔑 <b>MD5:</b> <code>$MD5</code>" \
+          -F parse_mode="HTML" -F caption="✅ <b>Build Completed</b>%0A━━━━━━━━━━━━━━━━━━━━%0A⏱️ <b>Duration:</b> <code>$DURATION</code>%0A🆔 <b>SHA:</b> <code>${{ env.COMMIT_SHA }}</code>%0A🔑 <b>MD5:</b> <code>$MD5</code>" \
           "${{ env.TG_BOT }}/sendDocument"
 
-      - name: Failure Handler
+      - name: Handle Failure
         if: failure()
         run: |
-          tail -n 150 build_log.txt > error.txt
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error.txt" \
-          -F parse_mode="HTML" -F caption="❌ <b>Build Failed</b>%0A🆔 <b>ID:</b> ${{ env.COMMIT_SHA }}" \
+          # Calculate time even on failure
+          DIFF=$(( $(date +%s) - START_TIME ))
+          DURATION="$(( DIFF / 60 ))m $(( DIFF % 60 ))s"
+          
+          # Grab last 200 lines of log
+          [ -f build_log.txt ] && tail -n 200 build_log.txt > error_log.txt || echo "Build failed early." > error_log.txt
+          
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" \
+          -F parse_mode="HTML" -F caption="❌ <b>Build Failed</b>%0A━━━━━━━━━━━━━━━━━━━━%0A⏱️ <b>Stopped at:</b> <code>$DURATION</code>%0A🆔 <b>SHA:</b> <code>${{ env.COMMIT_SHA }}</code>%0A⚠️ <i>Check logs for details.</i>" \
           "${{ env.TG_BOT }}/sendDocument"
