@@ -15,19 +15,25 @@ jobs:
     steps:
       - name: Build Execution
         run: |
-          # 1. Force log creation even on early crash
           touch build_log.txt
           exec > >(tee -a build_log.txt) 2>&1
 
           echo "Initializing Environment..."
           sudo apt-get update -qq
-          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
+          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release zram-tools
           sudo timedatectl set-timezone Asia/Kolkata
           
+          # Configure 10GB ZRAM
+          sudo modprobe zram
+          sudo zramctl --find --size 10G
+          sudo mkswap /dev/zram0
+          sudo swapon /dev/zram0 --priority 100
+          echo "ZRAM Status:"
+          zramctl
+
           echo "Cloning Sources..."
-          # Branch check: If lineage-23.2 fails, it will now show in your Telegram log
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel || echo "KERNEL CLONE FAILED"
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules || echo "MODULES CLONE FAILED"
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
           curl -sLo zipsigner.jar https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar
@@ -40,15 +46,16 @@ jobs:
             echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
             echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
             
-            echo "Starting Kernel Compilation..."
-            sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+            # Additional 4GB swap file for extreme safety
+            sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+            
             export PATH=$(pwd)/../clang/bin:$PATH
             MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
             
             make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
             make -j$(nproc --all) O=out $MAKE_ARGS
           else
-            echo "CRITICAL: Kernel directory missing. Build aborted."
+            echo "CRITICAL: Kernel directory missing."
             exit 1
           fi
 
@@ -75,8 +82,6 @@ jobs:
       - name: Handle Failure
         if: failure()
         run: |
-          # If the file is empty or missing, we grab the last system logs
-          [ -s build_log.txt ] && tail -n 500 build_log.txt > error_log.txt || echo "Build failed during initialization. Check Actions Console." > error_log.txt
-          
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build status: Check attached logs for error trace.</code>")
+          [ -s build_log.txt ] && tail -n 500 build_log.txt > error_log.txt || echo "Check Actions Console." > error_log.txt
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<i>Last 500 lines of trace attached.</i>")
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
