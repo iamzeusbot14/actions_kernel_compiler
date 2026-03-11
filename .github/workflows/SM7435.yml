@@ -19,8 +19,8 @@ jobs:
           sudo timedatectl set-timezone Asia/Kolkata
           
           # Source Sync
-          git clone https://github.com/CosmicCoreX/kernel_xiaomi_garnet.git --depth=1 -b bkl kernel
-          git clone https://github.com/CosmicCoreX/android_kernel_xiaomi_sm7435-devicetrees.git --depth=1 -b lineage-23 kernel/kernel/xiaomi/sm7435-modules
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b bkl kernel
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
           # Toolchain Prep
