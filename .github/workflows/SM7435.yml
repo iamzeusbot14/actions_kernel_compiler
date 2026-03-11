@@ -13,46 +13,44 @@ jobs:
       CHAT_ID: "${{ secrets.TG_CHAT_ID }}"
 
     steps:
-      - name: Environment Setup
+      - name: Build Execution
         run: |
+          # 1. Force log creation even on early crash
+          touch build_log.txt
+          exec > >(tee -a build_log.txt) 2>&1
+
+          echo "Initializing Environment..."
           sudo apt-get update -qq
           sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
           sudo timedatectl set-timezone Asia/Kolkata
           
-          # Source Sync
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b bkl kernel
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 kernel/kernel/xiaomi/sm7435-modules
+          echo "Cloning Sources..."
+          # Branch check: If lineage-23.2 fails, it will now show in your Telegram log
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel || echo "KERNEL CLONE FAILED"
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules || echo "MODULES CLONE FAILED"
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
-          # Download AOSP Signer
           curl -sLo zipsigner.jar https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar
-
-          # Toolchain Prep
           mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
           
-          # Metadata Extraction
-          cd kernel
-          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-          echo "START_DATE=$(date '+%a %b %d %I:%M:%S %p')" >> $GITHUB_ENV
-          echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
-          echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
-          echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "COMMIT_MSG=$(git log -1 --pretty=format:'%s')" >> $GITHUB_ENV
-
-      - name: Notify Build Started
-        run: |
-          MESSAGE=$(printf "<b>Build Triggered</b>\n<b>Kernel</b> : <code>Cosmic-v${{ env.K_VER }}-Garnet</code>\n<b>Support</b> : <code>Android 16.0</code>\n<b>Variant</b> : <code>GKI Stable</code>\n<b>Machine</b> : <code>$(lsb_release -ds)</code>\n<b>Cores</b> : <code>$(nproc --all)</code>\n<b>Time</b> : <code>${{ env.START_DATE }}</code>\n<b>Top Commit</b> : <code>${{ env.COMMIT_SHA }}</code> ${{ env.COMMIT_MSG }}")
-          curl -s -X POST "${{ env.TG_BOT }}/sendMessage" -d chat_id="${{ env.CHAT_ID }}" -d parse_mode="HTML" -d text="$MESSAGE"
-
-      - name: Build Execution
-        run: |
-          sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-          export PATH=$(pwd)/clang/bin:$PATH
-          cd kernel
-          MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-          
-          make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
-          make -j$(nproc --all) O=out $MAKE_ARGS 2>&1 | tee ../build_log.txt
+          if [ -d "kernel" ]; then
+            cd kernel
+            echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+            echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
+            echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
+            echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+            
+            echo "Starting Kernel Compilation..."
+            sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+            export PATH=$(pwd)/../clang/bin:$PATH
+            MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+            
+            make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
+            make -j$(nproc --all) O=out $MAKE_ARGS
+          else
+            echo "CRITICAL: Kernel directory missing. Build aborted."
+            exit 1
+          fi
 
       - name: Handle Success & Signing
         if: success()
@@ -61,7 +59,6 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image output/
           find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} output/ \;
           find kernel/out -name "*.ko" -exec cp {} output/ \;
-          
           cd output && zip -r9 ../unsigned.zip * && cd ..
           
           FINAL_ZIP="Cosmic-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
@@ -72,23 +69,14 @@ jobs:
           SEC=$(( DIFF % 60 ))
           MD5=$(md5sum "$FINAL_ZIP" | cut -d' ' -f1)
           
-          # Single-line format without emojis
           CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $MIN minute(s) and $SEC second(s) | MD5 Checksum : $MD5</code>")
-          
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          if [ -f build_log.txt ]; then
-            tail -n 500 build_log.txt > error_log.txt
-          else
-            echo "Build failed before log generation." > error_log.txt
-          fi
+          # If the file is empty or missing, we grab the last system logs
+          [ -s build_log.txt ] && tail -n 500 build_log.txt > error_log.txt || echo "Build failed during initialization. Check Actions Console." > error_log.txt
           
-          DIFF=$(( $(date +%s) - START_TIME ))
-          MIN=$(( DIFF / 60 ))
-          SEC=$(( DIFF % 60 ))
-          
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $MIN minute(s) and $SEC second(s)</code>\n<i>Last 500 lines of trace attached.</i>")
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build status: Check attached logs for error trace.</code>")
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"error_log.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
