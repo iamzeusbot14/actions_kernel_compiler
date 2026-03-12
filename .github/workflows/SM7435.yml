@@ -11,15 +11,16 @@ jobs:
     env:
       TG_BOT: "https://api.telegram.org/bot${{ secrets.TG_TOKEN }}"
       CHAT_ID: "${{ secrets.TG_CHAT_ID }}"
-      # Absolute path to ensure log persistence
-      FULL_LOG: "${{ github.workspace }}/build_log.txt"
+      # Use GITHUB_WORKSPACE to ensure absolute paths
+      WORKSPACE: "${{ github.workspace }}"
 
     steps:
       - name: Build Execution
         run: |
-          # 1. Setup Logging
-          touch $FULL_LOG
-          exec > >(tee -a $FULL_LOG) 2>&1
+          # 1. Force absolute log path
+          LOG_FILE="$WORKSPACE/build_log.txt"
+          touch "$LOG_FILE"
+          exec > >(tee -a "$LOG_FILE") 2>&1
 
           echo "Initializing Environment..."
           sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release
@@ -34,61 +35,63 @@ jobs:
           git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
           
-          curl -sLo zipsigner.jar https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar
+          curl -sLo $WORKSPACE/zipsigner.jar https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar
           mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
           
           if [ -d "kernel" ]; then
             cd kernel
             
-            # --- FIX: Brute-force Symbol Export ---
-            echo "Searching and Patching pwrkey_irq_notifier_list..."
-            # This finds the actual .c file containing the definition and appends the export
-            TARGET_FILE=$(grep -rln "BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)" . | head -n 1)
-            if [ ! -z "$TARGET_FILE" ]; then
-                echo "Found definition in $TARGET_FILE. Patching..."
-                echo "EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);" >> "$TARGET_FILE"
-            else
-                echo "Warning: Definition not found. Modpost may still fail."
-            fi
-
+            # Export Metadata early for the failure handler
             echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
             echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
             echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
             echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
+
+            # --- MODPOST Fix ---
+            echo "Patching symbols and disabling MTD_OOPS..."
+            TARGET_FILE=$(grep -rln "BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)" . | head -n 1)
+            [ ! -z "$TARGET_FILE" ] && sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' "$TARGET_FILE"
             
-            export PATH=$(pwd)/../clang/bin:$PATH
+            export PATH=$WORKSPACE/clang/bin:$PATH
             MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
             
             make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
+            # Force disable MTD_OOPS in .config
+            sed -i 's/CONFIG_MTD_OOPS=m/CONFIG_MTD_OOPS=n/g' out/.config
+            sed -i 's/CONFIG_MTD_OOPS=y/CONFIG_MTD_OOPS=n/g' out/.config
+
             make -j$(nproc --all) O=out $MAKE_ARGS
           else
-            echo "Kernel directory missing!" && exit 1
+            exit 1
           fi
 
       - name: Handle Success
         if: success()
         run: |
-          mkdir -p output
-          cp kernel/out/arch/arm64/boot/Image output/
-          find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} output/ \;
-          find kernel/out -name "*.ko" -exec cp {} output/ \;
-          cd output && zip -r9 ../unsigned.zip * && cd ..
+          mkdir -p $WORKSPACE/output
+          cp kernel/out/arch/arm64/boot/Image $WORKSPACE/output/
+          find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} $WORKSPACE/output/ \;
+          find kernel/out -name "*.ko" -exec cp {} $WORKSPACE/output/ \;
+          
+          cd $WORKSPACE/output && zip -r9 $WORKSPACE/unsigned.zip * && cd $WORKSPACE
           
           FINAL_ZIP="Cosmic-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
-          java -jar zipsigner.jar unsigned.zip "$FINAL_ZIP"
+          java -jar $WORKSPACE/zipsigner.jar $WORKSPACE/unsigned.zip "$WORKSPACE/$FINAL_ZIP"
           
-          DIFF=$(( $(date +%s) - env.START_TIME ))
-          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $(( DIFF / 60 ))m $(( DIFF % 60 ))s</code>")
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+          DIFF=$(( $(date +%s) - ${{ env.START_TIME }} ))
+          MD5=$(md5sum "$WORKSPACE/$FINAL_ZIP" | cut -d' ' -f1)
+          
+          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $(( DIFF / 60 ))m $(( DIFF % 60 ))s | MD5: $MD5</code>")
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$WORKSPACE/$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          # Use the absolute path defined in env
-          tail -n 500 ${{ env.FULL_LOG }} > ${{ github.workspace }}/error_trace.txt || echo "No logs captured." > ${{ github.workspace }}/error_trace.txt
+          # Use absolute path for log retrieval
+          tail -n 500 $WORKSPACE/build_log.txt > $WORKSPACE/error_trace.txt
           
           COMMIT="${{ env.COMMIT_SHA }}"
-          [ -z "$COMMIT" ] && COMMIT="Build Init"
+          [ -z "$COMMIT" ] && COMMIT="Build_Init_Failure"
 
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 lines of trace attached.</i>")
-          curl -v -F chat_id="${{ env.CHAT_ID }}" -F document=@"${{ github.workspace }}/error_trace.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 lines attached.</i>")
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$WORKSPACE/error_trace.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
