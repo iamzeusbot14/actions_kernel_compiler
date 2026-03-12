@@ -16,7 +16,6 @@ jobs:
     steps:
       - name: Build Execution
         run: |
-          # 1. Start Logging Immediately
           LOG_FILE="$WORKSPACE/build_log.txt"
           echo "Pipeline Started: $(date)" > "$LOG_FILE"
           exec > >(tee -a "$LOG_FILE") 2>&1
@@ -24,14 +23,19 @@ jobs:
           echo "Optimizing Git and Environment..."
           git config --global http.postBuffer 524288000
           git config --global core.compression 0
-          sudo apt-get update -qq && sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release wget
-          
+
+          sudo apt-get update -qq
+          sudo apt-get install -y jq bc bison build-essential flex libssl-dev libelf-dev openjdk-17-jre-headless lsb-release wget zip
+
           echo "Setting up 12GB Swap..."
           sudo swapoff -a
-          sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
           echo "Cloning Sources with Retry Logic..."
-          # Function to retry cloning if exit code is not 0
+
           clone_retry() {
             local url=$1
             local dir=$2
@@ -39,7 +43,7 @@ jobs:
             for i in {1..3}; do
               echo "Attempt $i: Cloning $branch from $url..."
               git clone $url --progress --depth=1 -b $branch $dir && return 0
-              echo "Clone failed. Cleaning up and retrying in 5s..."
+              echo "Clone failed. Retrying..."
               rm -rf $dir
               sleep 5
             done
@@ -48,62 +52,109 @@ jobs:
 
           clone_retry "https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git" "kernel" "lineage-23.2" || exit 1
           clone_retry "https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git" "kernel/kernel/xiaomi/sm7435-modules" "lineage-23.2" || exit 1
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --progress --depth=1 --filter=blob:none -b main clang-repo || exit 1
-          
+
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            --progress --depth=1 --filter=blob:none -b main clang-repo || exit 1
+
           wget -q https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar -O $WORKSPACE/zipsigner.jar
-          mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
-          
-          if [ -d "kernel" ]; then
-            cd kernel
-            echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-            echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
-            echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-            echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
 
-            echo "Applying MODPOST Fixes..."
-            TARGET_FILE=$(grep -rln "BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)" . | head -n 1)
-            [ ! -z "$TARGET_FILE" ] && sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' "$TARGET_FILE"
-            
-            export PATH=$WORKSPACE/clang/bin:$PATH
-            MAKE_ARGS="ARCH=arm64 CC=clang NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
-            
-            make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
-            sed -i 's/CONFIG_MTD_OOPS=m/CONFIG_MTD_OOPS=n/g' out/.config
-            sed -i 's/CONFIG_MTD_OOPS=y/CONFIG_MTD_OOPS=n/g' out/.config
+          mkdir clang
+          mv clang-repo/clang-r522817/* clang/
+          rm -rf clang-repo
 
-            make -j$(nproc --all) O=out $MAKE_ARGS
-          else
-            exit 1
+          cd kernel
+
+          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+          echo "K_VER=$(make kernelversion)" >> $GITHUB_ENV
+          echo "COMMIT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "ZIP_TS=$(date '+%d%m%Y-%H%M')" >> $GITHUB_ENV
+
+          echo "Applying MODPOST Fixes..."
+          TARGET_FILE=$(grep -rln "BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)" . | head -n 1)
+
+          if [ ! -z "$TARGET_FILE" ]; then
+            sed -i '/BLOCKING_NOTIFIER_HEAD(pwrkey_irq_notifier_list)/a EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);' "$TARGET_FILE"
           fi
+
+          export PATH=$WORKSPACE/clang/bin:$PATH
+
+          MAKE_ARGS="ARCH=arm64 \
+          CC=clang \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          LD=ld.lld \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+          LLVM=1 \
+          LLVM_IAS=1"
+
+          make O=out $MAKE_ARGS gki_defconfig vendor/garnet_GKI.config
+
+          sed -i 's/CONFIG_MTD_OOPS=m/CONFIG_MTD_OOPS=n/g' out/.config
+          sed -i 's/CONFIG_MTD_OOPS=y/CONFIG_MTD_OOPS=n/g' out/.config
+
+          make -j$(nproc --all) O=out $MAKE_ARGS
 
       - name: Handle Success
         if: success()
         run: |
           mkdir -p $WORKSPACE/output
-          cp kernel/out/arch/arm64/boot/Image $WORKSPACE/output/
+
+          cp kernel/out/arch/arm64/boot/Image $WORKSPACE/output/ || exit 1
+
           find kernel/out/arch/arm64/boot -name "dtbo.img" -exec cp {} $WORKSPACE/output/ \;
           find kernel/out -name "*.ko" -exec cp {} $WORKSPACE/output/ \;
-          cd $WORKSPACE/output && zip -r9 $WORKSPACE/unsigned.zip * && cd $WORKSPACE
-          
-          FINAL_ZIP="Cosmic-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
+
+          cd $WORKSPACE/output
+          zip -r9 $WORKSPACE/unsigned.zip *
+          cd $WORKSPACE
+
+          FINAL_ZIP="Cosmic-v${{ env.K_VER }}-garnet-dynamic-${{ env.ZIP_TS }}-signed.zip"
+
           java -jar $WORKSPACE/zipsigner.jar $WORKSPACE/unsigned.zip "$WORKSPACE/$FINAL_ZIP"
-          
+
+          echo "Checking generated files..."
+          ls -lh $WORKSPACE
+
+          if [ ! -f "$WORKSPACE/$FINAL_ZIP" ]; then
+            echo "Zip was not created!"
+            exit 1
+          fi
+
           DIFF=$(( $(date +%s) - ${{ env.START_TIME }} ))
-          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Time: $(( DIFF / 60 ))m $(( DIFF % 60 ))s</code>")
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$WORKSPACE/$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+
+          CAPTION=$(printf "<b>Cosmic Kernel Build Success</b>\n\n<b>Device:</b> Garnet\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build Time: $(( DIFF / 60 ))m $(( DIFF % 60 ))s</code>")
+
+          curl -F chat_id="${{ env.CHAT_ID }}" \
+               -F document=@"$WORKSPACE/$FINAL_ZIP" \
+               -F parse_mode="HTML" \
+               -F caption="$CAPTION" \
+               "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
           LOG_FILE="$WORKSPACE/build_log.txt"
           ERROR_FILE="$WORKSPACE/error_trace.txt"
+
           if [ -f "$LOG_FILE" ]; then
             tail -n 500 "$LOG_FILE" > "$ERROR_FILE"
           else
-            echo "Build crashed before logs could start." > "$ERROR_FILE"
+            echo "Build crashed before logs started." > "$ERROR_FILE"
           fi
-          
+
           COMMIT="${{ env.COMMIT_SHA }}"
-          [ -z "$COMMIT" ] && COMMIT="Initialization_Error"
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 lines attached.</i>")
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$ERROR_FILE" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+
+          if [ -z "$COMMIT" ]; then
+            COMMIT="Initialization_Error"
+          fi
+
+          CAPTION=$(printf "<b>Cosmic Kernel Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 log lines attached</i>")
+
+          curl -F chat_id="${{ env.CHAT_ID }}" \
+               -F document=@"$ERROR_FILE" \
+               -F parse_mode="HTML" \
+               -F caption="$CAPTION" \
+               "${{ env.TG_BOT }}/sendDocument"
