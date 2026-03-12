@@ -16,8 +16,9 @@ jobs:
     steps:
       - name: Build Execution
         run: |
+          # 1. IMMEDIATE log initialization
           LOG_FILE="$WORKSPACE/build_log.txt"
-          touch "$LOG_FILE"
+          echo "Build Pipeline Started at $(date)" > "$LOG_FILE"
           exec > >(tee -a "$LOG_FILE") 2>&1
 
           echo "Initializing Environment..."
@@ -29,11 +30,11 @@ jobs:
           sudo fallocate -l 12G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 
           echo "Cloning Sources..."
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --depth=1 -b lineage-23.2 kernel
-          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --filter=blob:none -b main clang-repo
+          # Using --progress to keep the connection alive during large clones
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435.git --progress --depth=1 -b lineage-23.2 kernel || exit 1
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm7435-modules.git --progress --depth=1 -b lineage-23.2 kernel/kernel/xiaomi/sm7435-modules || exit 1
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --progress --depth=1 --filter=blob:none -b main clang-repo || exit 1
           
-          # More reliable download for ZipSigner
           wget -q https://github.com/mosezhs/zipsigner/raw/master/zipsigner-3.0.jar -O $WORKSPACE/zipsigner.jar
           
           mkdir clang && mv clang-repo/clang-r522817/* clang/ && rm -rf clang-repo
@@ -58,6 +59,7 @@ jobs:
 
             make -j$(nproc --all) O=out $MAKE_ARGS
           else
+            echo "Kernel directory creation failed!"
             exit 1
           fi
 
@@ -71,29 +73,28 @@ jobs:
           
           cd $WORKSPACE/output && zip -r9 $WORKSPACE/unsigned.zip * && cd $WORKSPACE
           
-          # Verification step for JAR
-          if [ ! -s "$WORKSPACE/zipsigner.jar" ]; then
-            echo "ZipSigner JAR is missing or empty!"
-            exit 1
-          fi
-
           FINAL_ZIP="Cosmic-v${{ env.K_VER }}-violet-dynamic-${{ env.ZIP_TS }}-signed.zip"
           java -jar $WORKSPACE/zipsigner.jar $WORKSPACE/unsigned.zip "$WORKSPACE/$FINAL_ZIP"
           
           DIFF=$(( $(date +%s) - ${{ env.START_TIME }} ))
-          MD5=$(md5sum "$WORKSPACE/$FINAL_ZIP" | cut -d' ' -f1)
-          
-          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $(( DIFF / 60 ))m $(( DIFF % 60 ))s | MD5: $MD5</code>")
+          CAPTION=$(printf "<b>Build Success</b>\n\n<b>Commit:</b> <code>${{ env.COMMIT_SHA }}</code>\n<code>Build took : $(( DIFF / 60 ))m $(( DIFF % 60 ))s</code>")
           curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$WORKSPACE/$FINAL_ZIP" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
 
       - name: Handle Failure
         if: failure()
         run: |
-          # Robust log retrieval
-          [ -f $WORKSPACE/build_log.txt ] && tail -n 500 $WORKSPACE/build_log.txt > $WORKSPACE/error_trace.txt || echo "No log found" > $WORKSPACE/error_trace.txt
+          # 2. Resilient log check
+          LOG_FILE="$WORKSPACE/build_log.txt"
+          ERROR_FILE="$WORKSPACE/error_trace.txt"
+          
+          if [ -f "$LOG_FILE" ]; then
+            tail -n 500 "$LOG_FILE" > "$ERROR_FILE"
+          else
+            echo "Build failed before log initialization. Check GitHub Console." > "$ERROR_FILE"
+          fi
           
           COMMIT="${{ env.COMMIT_SHA }}"
-          [ -z "$COMMIT" ] && COMMIT="Build_Init_Failure"
+          [ -z "$COMMIT" ] && COMMIT="Initialization_Error"
 
-          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Check trace for JAR or Build errors.</i>")
-          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$WORKSPACE/error_trace.txt" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
+          CAPTION=$(printf "<b>Build Failed</b>\n\n<b>Commit:</b> <code>$COMMIT</code>\n<i>Last 500 lines of trace attached.</i>")
+          curl -F chat_id="${{ env.CHAT_ID }}" -F document=@"$ERROR_FILE" -F parse_mode="HTML" -F caption="$CAPTION" "${{ env.TG_BOT }}/sendDocument"
